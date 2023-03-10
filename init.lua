@@ -920,3 +920,353 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
 		end
 	end
 end)
+
+
+local function print_object(obj)
+	if obj:is_player() then
+		return "player '"..obj:get_player_name().."'"
+	elseif obj:get_luaentity() then
+		return "LuaEntity '"..obj:get_luaentity().name.."'"
+	else
+		return "object"
+	end
+end
+
+minetest.register_tool("testtools:children_getter", {
+	description = S("Children Getter") .."\n"..
+		S("Shows list of objects attached to object") .."\n"..
+		S("Punch object to show its 'children'") .."\n"..
+		S("Punch air to show your own 'children'"),
+	inventory_image = "testtools_children_getter.png",
+	groups = { testtool = 1, disable_repair = 1 },
+	on_use = function(itemstack, player, pointed_thing)
+	local t = "testtools:children_getter"
+	local name = player:get_player_name()
+	local priv = minetest.check_player_privs(name, {testtools = true})
+	local inv = player:get_inventory()
+	if not priv and inv:contains_item("main", t) then
+		inv:remove_item("main", t)
+		minetest.chat_send_player(name, minetest.colorize("#FF0000",S("You haven't 'testtools' privilage to use "..t)))
+	end
+	if priv then
+		if player and player:is_player() then
+			local selected_object
+			local self_name
+			if pointed_thing.type == "object" then
+				selected_object = pointed_thing.ref
+			elseif pointed_thing.type == "nothing" then
+				selected_object = user
+			else
+				return
+			end
+			self_name = print_object(selected_object)
+			local children = selected_object:get_children()
+			local ret = ""
+			for c=1, #children do
+				ret = ret .. "* " .. print_object(children[c])
+				if c < #children then
+					ret = ret .. "\n"
+				end
+			end
+			if ret == "" then
+				ret = S("No children attached to @1.", self_name)
+			else
+				ret = S("Children of @1:", self_name) .. "\n" .. ret
+			end
+			minetest.chat_send_player(user:get_player_name(), ret)
+		end
+	end
+end,
+})
+
+
+-- Item Meta Editor + Node Meta Editor
+local node_meta_posses = {}
+local meta_latest_keylist = {}
+
+local function show_meta_formspec(player, metatype, pos_or_item, key, value, keylist)
+	local textlist
+	if keylist then
+		textlist = "textlist[0,0.5;2.5,6.5;keylist;"..keylist.."]"
+	else
+		textlist = ""
+	end
+
+	local form = "size[15,9]"..
+		"label[0,0;"..F(S("Current keys:")).."]"..
+		textlist..
+		"field[3,0.5;12,1;key;"..F(S("Key"))..";"..F(key).."]"..
+		"textarea[3,1.5;12,6;value;"..F(S("Value (use empty value to delete key)"))..";"..F(value).."]"..
+		"button[4,8;3,1;set;"..F(S("Set value")).."]"
+
+	local extra_label
+	local formname
+	if metatype == "node" then
+		formname = "testtools:node_meta_editor"
+		extra_label = S("pos = @1", minetest.pos_to_string(pos_or_item))
+	else
+		formname = "testtools:item_meta_editor"
+		extra_label = S("item = @1", pos_or_item:get_name())
+	end
+	form = form .. "label[0,7.2;"..F(extra_label).."]"
+
+	minetest.show_formspec(player:get_player_name(), formname, form)
+end
+
+local function get_meta_keylist(meta, playername, escaped)
+	local keys = {}
+	local ekeys = {}
+	local mtable = meta:to_table()
+	for k,_ in pairs(mtable.fields) do
+		table.insert(keys, k)
+		if escaped then
+			table.insert(ekeys, F(k))
+		else
+			table.insert(ekeys, k)
+		end
+	end
+	if playername then
+		meta_latest_keylist[playername] = keys
+	end
+	return table.concat(ekeys, ",")
+end
+
+minetest.register_tool("testtools:node_meta_editor", {
+	description = S("Node Meta Editor") .. "\n" ..
+		S("Place: Edit node metadata"),
+	inventory_image = "testtools_node_meta_editor.png",
+	groups = { testtool = 1, disable_repair = 1 },
+	on_place = function(itemstack, player, pointed_thing)
+	local t = "testtools:node_meta_editor"
+	local name = player:get_player_name()
+	local priv = minetest.check_player_privs(name, {testtools = true, server = true})
+	local p =  ""
+	if not minetest.check_player_privs(name, {server = true}) then
+		p = "'testtools' and 'server'"
+	end
+	if minetest.check_player_privs(name, {server = true}) then
+		p = "'testtools'"
+	end
+	local inv = player:get_inventory()
+	if not priv and inv:contains_item("main", t) then
+		inv:remove_item("main", t)
+		minetest.chat_send_player(name, minetest.colorize("#FF0000",S("You haven't "..p.." privilages to use "..t)))
+	end
+	if priv then
+		if pointed_thing.type ~= "node" then
+			return itemstack
+		end
+		if not player:is_player() then
+			return itemstack
+		end
+		local pos = pointed_thing.under
+		node_meta_posses[player:get_player_name()] = pos
+		local meta = minetest.get_meta(pos)
+		local inv = meta:get_inventory()
+		show_meta_formspec(player, "node", pos, "", "", get_meta_keylist(meta, player:get_player_name(), true))
+		return itemstack
+	end
+end,
+})
+
+local function get_item_next_to_wielded_item(player)
+	local inv = player:get_inventory()
+	local wield = player:get_wield_index()
+	local itemstack = inv:get_stack("main", wield+1)
+	return itemstack
+end
+local function set_item_next_to_wielded_item(player, itemstack)
+	local inv = player:get_inventory()
+	local wield = player:get_wield_index()
+	inv:set_stack("main", wield+1, itemstack)
+end
+
+local function use_item_meta_editor(itemstack, player, pointed_thing)
+	local t = "testtools:item_meta_editor"
+	local name = player:get_player_name()
+	local priv = minetest.check_player_privs(name, {testtools = true, server = true})
+	local p =  ""
+	if not minetest.check_player_privs(name, {server = true}) then
+		p = "'testtools' and 'server'"
+	end
+	if minetest.check_player_privs(name, {server = true}) then
+		p = "'testtools'"
+	end
+	local inv = player:get_inventory()
+	if not priv and inv:contains_item("main", t) then
+		inv:remove_item("main", t)
+		minetest.chat_send_player(name, minetest.colorize("#FF0000",S("You haven't "..p.." privilages to use "..t)))
+	end
+	if priv then
+	if not player:is_player() then
+		return itemstack
+	end
+	local item_to_edit = get_item_next_to_wielded_item(player)
+	if item_to_edit:is_empty() then
+		minetest.chat_send_player(player:get_player_name(), S("Place an item next to the Item Meta Editor in your inventory first!"))
+		return itemstack
+	end
+	local meta = item_to_edit:get_meta()
+	show_meta_formspec(player, "item", item_to_edit, "", "", get_meta_keylist(meta, user:get_player_name(), true))
+	return itemstack
+   end
+end
+
+minetest.register_tool("testtools:item_meta_editor", {
+	description = S("Item Meta Editor") .. "\n" ..
+		S("Punch/Place: Edit item metadata of item in the next inventory slot"),
+	inventory_image = "testtools_item_meta_editor.png",
+	groups = { testtool = 1, disable_repair = 1 },
+	on_use = use_item_meta_editor,
+	on_secondary_use = use_item_meta_editor,
+	on_place = use_item_meta_editor,
+})
+
+minetest.register_on_player_receive_fields(function(player, formname, fields)
+	if not (player and player:is_player()) then
+		return
+	end
+	if formname == "testtools:entity_list" then
+		local name = player:get_player_name()
+		if fields.entity_list then
+			local expl = minetest.explode_textlist_event(fields.entity_list)
+			if expl.type == "DCL" then
+				local pos = vector.add(player:get_pos(), {x=0,y=1,z=0})
+				selections[name] = expl.index
+				minetest.add_entity(pos, get_entity_list()[expl.index])
+				return
+			elseif expl.type == "CHG" then
+				selections[name] = expl.index
+				return
+			end
+		elseif fields.spawn and selections[name] then
+			local pos = vector.add(player:get_pos(), {x=0,y=1,z=0})
+			minetest.add_entity(pos, get_entity_list()[selections[name]])
+			return
+		end
+	elseif formname == "testtools:object_editor" then
+		local name = player:get_player_name()
+		if fields.object_props then
+			local expl = minetest.explode_textlist_event(fields.object_props)
+			if expl.type == "DCL" or expl.type == "CHG" then
+				property_formspec_index[name] = expl.index
+
+				local props = selected_objects[name]:get_properties()
+				local keys = property_formspec_data[name]
+				if (not property_formspec_index[name]) or (not props) then
+					return
+				end
+				local key = keys[property_formspec_index[name]]
+				editor_formspec_selindex[name] = expl.index
+				editor_formspec(name, selected_objects[name], prop_to_string(props[key]), expl.index)
+				return
+			end
+		end
+		if fields.key_enter_field == "value" or fields.submit then
+			local props = selected_objects[name]:get_properties()
+			local keys = property_formspec_data[name]
+			if (not property_formspec_index[name]) or (not props) then
+				return
+			end
+			local key = keys[property_formspec_index[name]]
+			if not key then
+				return
+			end
+			local success, str = use_loadstring(fields.value, player)
+			if success then
+				props[key] = str
+			else
+				minetest.chat_send_player(name, str)
+				return
+			end
+			selected_objects[name]:set_properties(props)
+			local sel = editor_formspec_selindex[name]
+			editor_formspec(name, selected_objects[name], prop_to_string(props[key]), sel)
+			return
+		end
+	elseif formname == "testtools:node_setter" then
+		local playername = player:get_player_name()
+		local witem = player:get_wielded_item()
+		if witem:get_name() == "testtools:node_setter" then
+			if fields.nodename and fields.param2 then
+				local param2 = tonumber(fields.param2)
+				if not param2 then
+					return
+				end
+				local meta = witem:get_meta()
+				meta:set_string("node", fields.nodename)
+				meta:set_int("node_param2", param2)
+				player:set_wielded_item(witem)
+			end
+		end
+	elseif formname == "testtools:node_meta_editor" or formname == "testtools:item_meta_editor" then
+		local name = player:get_player_name()
+		local metatype
+		local pos_or_item
+		if formname == "testtools:node_meta_editor" then
+			metatype = "node"
+			pos_or_item = node_meta_posses[name]
+		else
+			metatype = "item"
+			pos_or_item = get_item_next_to_wielded_item(player)
+		end
+		if fields.keylist then
+			local evnt = minetest.explode_textlist_event(fields.keylist)
+			if evnt.type == "DCL" or evnt.type == "CHG" then
+				local keylist_table = meta_latest_keylist[name]
+				if metatype == "node" and not pos_or_item then
+					return
+				end
+				local meta
+				if metatype == "node" then
+					meta = minetest.get_meta(pos_or_item)
+				else
+					meta = pos_or_item:get_meta()
+				end
+				if not keylist_table then
+					return
+				end
+				if #keylist_table == 0 then
+					return
+				end
+				local key = keylist_table[evnt.index]
+				local value = meta:get_string(key)
+				local keylist_escaped = {}
+				for k,v in pairs(keylist_table) do
+					keylist_escaped[k] = F(v)
+				end
+				local keylist = table.concat(keylist_escaped, ",")
+				show_meta_formspec(player, metatype, pos_or_item, key, value, keylist)
+				return
+			end
+		elseif fields.key and fields.key ~= "" and fields.value then
+			if metatype == "node" and not pos_or_item then
+				return
+			end
+			local meta
+			if metatype == "node" then
+				meta = minetest.get_meta(pos_or_item)
+			elseif metatype == "item" then
+				if pos_or_item:is_empty() then
+					return
+				end
+				meta = pos_or_item:get_meta()
+			end
+			if fields.set then
+				meta:set_string(fields.key, fields.value)
+				if metatype == "item" then
+					set_item_next_to_wielded_item(player, pos_or_item)
+				end
+				show_meta_formspec(player, metatype, pos_or_item, fields.key, fields.value,
+						get_meta_keylist(meta, name, true))
+			end
+			return
+		end
+	end
+end)
+
+minetest.register_on_leaveplayer(function(player)
+	local name = player:get_player_name()
+	meta_latest_keylist[name] = nil
+	node_meta_posses[name] = nil
+end)
