@@ -9,22 +9,6 @@ minetest.register_privilege("testtools", {
 	give_to_admin = false,
 })
 
-local takeback = function(itemstack, player)
-	local name = player:get_player_name()
-	local priv = minetest.check_player_privs(name, {testtools = true})
-	local inv = player:get_inventory()
-	if not priv and inv:contains_item("main", "testtools:param2tool") then
-		inv:remove_item("main", "testtools:param2tool")
-		minetest.chat_send_player(name, minetest.colorize("#FF0000",S("testtools: Your not allowed to use testtools")))
-   end
-end
-
-local check = function(player)
-	local name = player:get_player_name()
-	minetest.check_player_privs(name, {testtools = true})
-end
-	
-
 -- TODO: Add a Node Metadata tool
 
 minetest.register_tool("testtools:param2tool", {
